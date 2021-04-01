@@ -523,7 +523,7 @@ public:
                     };
                     auto handler = new test_handler(*server, std::move(write_func));
                     server->_routes.put(GET, "/test", handler);
-                    when_all(server->do_accepts(0), handler->wait_for_message()).get();
+                    when_all(server->do_accepts(0, false), handler->wait_for_message()).get();
                 });
                 return when_all(std::move(client), std::move(server_setup));
             }).discard_result().then_wrapped([&server] (auto f) {
@@ -593,7 +593,7 @@ public:
                     };
                     auto handler = new test_handler(*server, tests);
                     server->_routes.put(GET, "/test", handler);
-                    when_all(server->do_accepts(0), handler->wait_for_message()).get();
+                    when_all(server->do_accepts(0, false), handler->wait_for_message()).get();
                 });
                 return when_all(std::move(client), std::move(server_setup));
             }).discard_result().then_wrapped([&server] (auto f) {
@@ -768,7 +768,7 @@ SEASTAR_TEST_CASE(content_length_limit) {
 
         auto handler = new json_test_handler(json::stream_object("hello"));
         server._routes.put(GET, "/test", handler);
-        server.do_accepts(0).get();
+        server.do_accepts(0, false).get();
 
         client.get();
         server.stop().get();
@@ -823,7 +823,7 @@ SEASTAR_TEST_CASE(test_100_continue) {
 
         auto handler = new json_test_handler(json::stream_object("hello"));
         server._routes.put(GET, "/test", handler);
-        server.do_accepts(0).get();
+        server.do_accepts(0, false).get();
 
         client.get();
         server.stop().get();
@@ -855,7 +855,7 @@ SEASTAR_TEST_CASE(test_unparsable_request) {
 
         auto handler = new json_test_handler(json::stream_object("hello"));
         server._routes.put(GET, "/test", handler);
-        server.do_accepts(0).get();
+        server.do_accepts(0, false).get();
 
         client.get();
         server.stop().get();
@@ -948,7 +948,7 @@ future<> check_http_reply (std::vector<sstring>&& req_parts, std::vector<std::st
         });
 
         server._routes.put(GET, "/test", handl);
-        server.do_accepts(0).get();
+        server.do_accepts(0, false).get();
 
         client.get();
         server.stop().get();
@@ -1023,7 +1023,7 @@ SEASTAR_TEST_CASE(test_streamed_content) {
 
         auto handler = new echo_stream_handler();
         server._routes.put(GET, "/test", handler);
-        server.do_accepts(0).get();
+        server.do_accepts(0, false).get();
 
         client.get();
         server.stop().get();
@@ -1106,7 +1106,7 @@ SEASTAR_TEST_CASE(test_string_content) {
 
         auto handler = new echo_string_handler();
         server._routes.put(GET, "/test", handler);
-        server.do_accepts(0).get();
+        server.do_accepts(0, false).get();
 
         client.get();
         server.stop().get();
@@ -1179,7 +1179,7 @@ SEASTAR_THREAD_TEST_CASE(multiple_connections) {
         socks.push_back(loopback_socket_impl(lcf).connect(addr, addr).get0());
     }
 
-    server.do_accepts(0).get();
+    server.do_accepts(0, false).get();
     server.stop().get();
     lcf.destroy_all_shards().get();
 }
