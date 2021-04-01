@@ -75,11 +75,12 @@ class connection : public boost::intrusive::list_base_hook<> {
     queue<std::unique_ptr<reply>> _replies { 10 };
     bool _done = false;
     bool _encrypted;
+    int _listener_idx;
 public:
     connection(http_server& server, connected_socket&& fd,
-            socket_address addr, bool encrypted)
+            socket_address addr, bool encrypted, int listener_idx)
             : _server(server), _fd(std::move(fd)), _read_buf(_fd.input()), _write_buf(
-                    _fd.output()), _encrypted(encrypted) {
+                    _fd.output()), _encrypted(encrypted), _listener_idx(listener_idx) {
         on_new_connection();
     }
     ~connection();

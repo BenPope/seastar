@@ -228,6 +228,7 @@ future<> connection::read_one() {
         }
         ++_server._requests_served;
         std::unique_ptr<httpd::request> req = _parser.get_parsed_request();
+        req->listener_idx = _listener_idx;
         if (_encrypted) {
             req->protocol_name = "https";
         }
@@ -524,8 +525,8 @@ future<> http_server::do_accepts(int which, bool encrypted) {
 }
 
 future<> http_server::do_accept_one(int which, bool encrypted) {
-    return _listeners[which].accept().then([this, encrypted] (accept_result ar) mutable {
-        auto conn = std::make_unique<connection>(*this, std::move(ar.connection), std::move(ar.remote_address), encrypted);
+    return _listeners[which].accept().then([this, encrypted, which] (accept_result ar) mutable {
+        auto conn = std::make_unique<connection>(*this, std::move(ar.connection), std::move(ar.remote_address), encrypted, which);
         (void)try_with_gate(_task_gate, [conn = std::move(conn)]() mutable {
             return conn->process().handle_exception([conn = std::move(conn)] (std::exception_ptr ex) {
                 hlogger.error("request error: {}", ex);
