@@ -93,11 +93,11 @@ public:
 };
 
 class fair_group_rover {
-    uint32_t _weight = 0;
-    uint32_t _size = 0;
+    uint64_t _weight = 0;
+    uint64_t _size = 0;
 
 public:
-    fair_group_rover(uint32_t weight, uint32_t size) noexcept;
+    fair_group_rover(uint64_t weight, uint64_t size) noexcept;
 
     /*
      * For both dimentions checks if the current rover is ahead of the
@@ -176,7 +176,6 @@ using priority_class_ptr = lw_shared_ptr<priority_class>;
 /// the given time frame exceeds the disk throughput.
 class fair_group {
     using fair_group_atomic_rover = std::atomic<fair_group_rover>;
-    static_assert(fair_group_atomic_rover::is_always_lock_free);
 
     fair_group_atomic_rover _capacity_tail;
     fair_group_atomic_rover _capacity_head;
