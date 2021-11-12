@@ -685,6 +685,8 @@ max_concurrent_for_each(Iterator begin, Iterator end, size_t max_concurrent, Fun
     }
 }
 
+SEASTAR_CONCEPT( template< class T > concept std_iterator_range = requires(T& t) { std::begin(t); std::end(t); }; )
+
 /// Run a maximum of \c max_concurrent tasks in parallel (range version).
 ///
 /// Given a range of objects, run \c func on each \c *i in
@@ -703,7 +705,7 @@ max_concurrent_for_each(Iterator begin, Iterator end, size_t max_concurrent, Fun
 ///         complete.  If one or more return an exception, the return value
 ///         contains one of the exceptions.
 template <typename Range, typename Func>
-SEASTAR_CONCEPT( requires std::ranges::range<Range> && requires (Func f, Range r) { { f(*r.begin()) } -> std::same_as<future<>>; } )
+SEASTAR_CONCEPT( requires std_iterator_range<Range> && requires (Func f, Range r) { { f(*r.begin()) } -> std::same_as<future<>>; } )
 inline
 future<>
 max_concurrent_for_each(Range&& range, size_t max_concurrent, Func&& func) noexcept {
