@@ -22,10 +22,13 @@
 #pragma once
 
 #include <seastar/util/program-options.hh>
+#include <boost/program_options/options_description.hpp>
 
 /// \file
 
 namespace seastar {
+
+boost::program_options::options_description get_smp_options_description();
 
 /// Configuration for the multicore aspect of seastar.
 struct smp_options : public program_options::option_group {

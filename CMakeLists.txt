@@ -690,6 +690,7 @@ add_library (seastar STATIC
   src/util/read_first_line.cc
   src/util/tmp_file.cc
   src/util/short_streams.cc
+  src/util/smp_options.cc
   src/websocket/server.cc
   )
 
