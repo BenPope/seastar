@@ -191,6 +191,7 @@ public:
     virtual future<> readable(pollable_fd_state& fd) = 0;
     virtual future<> writeable(pollable_fd_state& fd) = 0;
     virtual future<> readable_or_writeable(pollable_fd_state& fd) = 0;
+    virtual future<> poll_rdhup(pollable_fd_state& fd) = 0;
     virtual void forget(pollable_fd_state& fd) noexcept = 0;
 
     virtual future<std::tuple<pollable_fd, socket_address>>
@@ -253,6 +254,7 @@ public:
     virtual future<> readable(pollable_fd_state& fd) override;
     virtual future<> writeable(pollable_fd_state& fd) override;
     virtual future<> readable_or_writeable(pollable_fd_state& fd) override;
+    virtual future<> poll_rdhup(pollable_fd_state& fd) override;
     virtual void forget(pollable_fd_state& fd) noexcept override;
 
     virtual future<std::tuple<pollable_fd, socket_address>>
@@ -301,6 +303,7 @@ public:
     virtual future<> readable(pollable_fd_state& fd) override;
     virtual future<> writeable(pollable_fd_state& fd) override;
     virtual future<> readable_or_writeable(pollable_fd_state& fd) override;
+    virtual future<> poll_rdhup(pollable_fd_state& fd) override;
     virtual void forget(pollable_fd_state& fd) noexcept override;
 
     virtual future<std::tuple<pollable_fd, socket_address>>
