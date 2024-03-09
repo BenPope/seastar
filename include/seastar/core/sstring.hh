@@ -76,7 +76,8 @@ class basic_sstring {
     static_assert(
             (std::is_same<char_type, char>::value
              || std::is_same<char_type, signed char>::value
-             || std::is_same<char_type, unsigned char>::value),
+             || std::is_same<char_type, unsigned char>::value
+             || std::is_same<char_type, std::byte>::value),
             "basic_sstring only supports single byte char types");
     union contents {
         struct external_type {
