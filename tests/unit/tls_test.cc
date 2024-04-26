@@ -1212,7 +1212,7 @@ SEASTAR_THREAD_TEST_CASE(test_reload_certificates_with_creds) {
         BOOST_CHECK(certs_info.has_value() && !certs_info.value().empty());
         BOOST_CHECK(trust_list_info.has_value() && trust_list_info.value().empty());
 
-    }).get0();
+    }).get();
 
     BOOST_CHECK(certs != nullptr);
 
