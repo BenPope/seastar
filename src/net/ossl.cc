@@ -35,12 +35,17 @@ module;
 
 #include <system_error>
 
+#include <fmt/ranges.h>
+
 #ifdef SEASTAR_MODULE
 module seastar;
 #else
 #include "net/tls-impl.hh"
 
+#include <seastar/core/future.hh>
 #include <seastar/core/gate.hh>
+#include <seastar/core/loop.hh>
+#include <seastar/core/scattered_message.hh>
 #include <seastar/core/sstring.hh>
 #include <seastar/core/with_timeout.hh>
 #include <seastar/net/stack.hh>
@@ -52,6 +57,33 @@ module seastar;
 
 namespace seastar {
 
+enum class ossl_errc : int {};
+
+}
+
+namespace std {
+
+template<>
+struct is_error_code_enum<seastar::ossl_errc> : true_type {};
+
+}
+
+template<>
+struct fmt::formatter<seastar::ossl_errc> : public fmt::formatter<std::string_view> {
+    auto format(seastar::ossl_errc error, fmt::format_context& ctx) const -> decltype(ctx.out()) {
+        constexpr size_t error_buf_size = 256;
+        // Buffer passed to ERR_error_string must be at least 256 bytes large
+        // https://www.openssl.org/docs/man3.0/man3/ERR_error_string_n.html
+        std::array<char, error_buf_size> buf{};
+        ERR_error_string_n(
+          static_cast<unsigned long>(error), buf.data(), buf.size());
+        // ERR_error_string_n does include the terminating null character
+        return fmt::format_to(ctx.out(), "{}", buf.data());
+    }
+};
+
+namespace seastar {
+
 class ossl_error_category : public std::error_category {
 public:
     constexpr ossl_error_category() noexcept : std::error_category{} {}
@@ -59,14 +91,7 @@ public:
         return "OpenSSL";
     }
     std::string message(int error) const override {
-        static constexpr size_t error_buf_size = 256;
-        // Buffer passed to ERR_error_string must be at least 256 bytes large
-        // https://www.openssl.org/docs/man3.0/man3/ERR_error_string_n.html
-        std::array<char, error_buf_size> buf{};
-        ERR_error_string_n(
-          static_cast<unsigned long>(error), buf.data(), buf.size());
-        // ERR_error_string_n does include the terminating null character
-        return std::string{buf.data()};
+        return fmt::format("{}", static_cast<ossl_errc>(error));
     }
 };
 
@@ -75,14 +100,16 @@ const std::error_category& tls::error_category() {
     return ec;
 }
 
+std::error_code make_error_code(ossl_errc e) {
+    return std::error_code(static_cast<int>(e), tls::error_category());
+}
+
 class ossl_error : public std::system_error {
 public:
-    static constexpr size_t error_buf_size = 256;
-
     static ossl_error make_ossl_error(const sstring& msg) {
-        std::vector<unsigned long> error_codes;
+        auto error_codes = build_error_codes();
         auto formatted_msg = fmt::format(
-          "{}: {}", msg, build_error(error_codes));
+          "{}: {}", msg, error_codes);
 
         if (error_codes.empty()) {
             return ossl_error(std::move(formatted_msg));
@@ -91,36 +118,29 @@ public:
         }
     }
 
-    const std::vector<unsigned long>& get_ossl_error_codes() const {
+    const std::vector<ossl_errc>& get_ossl_error_codes() const {
         return _ossl_error_codes;
     }
 
 private:
     explicit ossl_error(std::string msg)
-      : std::system_error(0, tls::error_category(), std::move(msg)) {}
-    ossl_error(std::string msg, std::vector<unsigned long> error_codes)
-      : std::system_error(
-        static_cast<int>(error_codes.front()),
-        tls::error_category(),
-        std::move(msg))
+      : std::system_error(0, tls::error_category(), std::move(msg)) {
+        assert(false);
+      }
+    ossl_error(std::string msg, std::vector<ossl_errc> error_codes)
+      : std::system_error(make_error_code(error_codes.front()), std::move(msg))
       , _ossl_error_codes(std::move(error_codes)) {}
 
-    static sstring build_error(std::vector<unsigned long>& error_codes) {
-        sstring msg = "{";
-        // Buffer passed to ERR_error_string must be at least 256 bytes large
-        // https://www.openssl.org/docs/man3.0/man3/ERR_error_string_n.html
-        std::array<char, error_buf_size> buf{};
+    static std::vector<ossl_errc> build_error_codes() {
+        std::vector<ossl_errc> error_codes;
         for (auto code = ERR_get_error(); code != 0; code = ERR_get_error()) {
-            error_codes.push_back(code);
-            ERR_error_string_n(code, buf.data(), buf.size());
-            msg += fmt::format("{{{}: {}}}", code, buf.data());
+            error_codes.push_back(static_cast<ossl_errc>(code));
         }
-        msg += "}";
-        return msg;
+        return error_codes;
     }
 
 private:
-    std::vector<unsigned long> _ossl_error_codes;
+    std::vector<ossl_errc> _ossl_error_codes;
 };
 
 template<typename T>
@@ -133,16 +153,16 @@ static std::vector<std::byte> extract_x509_serial(X509* cert) {
     constexpr size_t serial_max = 160;
     const ASN1_INTEGER *serial_no = X509_get_serialNumber(cert);
     const size_t serial_size = std::min(serial_max, (size_t)serial_no->length);
-    std::vector<std::byte> serial(reinterpret_cast<std::vector<std::byte>::value_type*>(serial_no->data),
-                                  reinterpret_cast<std::vector<std::byte>::value_type*>(serial_no->data + serial_size));
+    std::vector<std::byte> serial(
+        reinterpret_cast<std::byte*>(serial_no->data),
+        reinterpret_cast<std::byte*>(serial_no->data + serial_size));
     return serial;
 }
 
 static time_t extract_x509_expiry(X509* cert) {
-    ASN1_TIME *not_after = X509_get_notAfter(cert);
-    if (not_after) {
-        struct tm tm_struct;
-        memset(&tm_struct, 0, sizeof(struct tm));
+    const ASN1_TIME *not_after = X509_get0_notAfter(cert);
+    if (not_after != nullptr) {
+        tm tm_struct{};
         ASN1_TIME_to_tm(not_after, &tm_struct);
         return mktime(&tm_struct);
     }
@@ -187,12 +207,12 @@ using ssl_ptr = ssl_handle<SSL, SSL_free>;
 ///
 class tls::dh_params::impl {
 public:
-    impl(level) {}
+    explicit impl(level) {}
     impl(const blob&, x509_crt_format){}
 
-    EVP_PKEY* get() const { return _pkey.get(); }
+    const EVP_PKEY* get() const { return _pkey.get(); }
 
-    operator EVP_PKEY*() const { return _pkey.get(); }
+    operator const EVP_PKEY*() const { return _pkey.get(); }
 
 private:
     evp_pkey_ptr _pkey;
@@ -206,8 +226,7 @@ tls::dh_params::dh_params(const blob& b, x509_crt_format fmt)
 }
 
 // TODO(rob) some small amount of code duplication here
-tls::dh_params::~dh_params() {
-}
+tls::dh_params::~dh_params() = default;
 
 tls::dh_params::dh_params(dh_params&&) noexcept = default;
 tls::dh_params& tls::dh_params::operator=(dh_params&&) noexcept = default;
@@ -598,7 +617,7 @@ public:
       , _out(_sock->sink())
       , _in_sem(1)
       , _out_sem(1)
-      , _options(options)
+      , _options(std::move(options))
       , _output_pending(make_ready_future<>())
       , _ctx(make_ssl_context())
       , _ssl([this]() {
@@ -661,31 +680,32 @@ public:
     // `_output_pending` to resolve.
     future<> perform_push() {
         return _output_pending.then([this] {
-            auto msg = make_lw_shared<scattered_message<char>>();
-            return do_until(
-                     [this] { return BIO_ctrl_pending(_out_bio) == 0; },
-                     [this, msg] {
+            return repeat_until_value(
+                     [this, msg = scattered_message<char>()] () mutable {
+                         using ret_t = std::optional<scattered_message<char>>;
                          buf_type buf(BIO_ctrl_pending(_out_bio));
                          auto n = BIO_read(
                            _out_bio, buf.get_write(), buf.size());
                          if (n > 0) {
                              buf.trim(n);
-                             msg->append(std::move(buf));
+                             msg.append(std::move(buf));
                          } else if (!BIO_should_retry(_out_bio)) {
                              _error = std::make_exception_ptr(
                                ossl_error::make_ossl_error(
                                  "Failed to read data from _out_bio"));
-                             return make_exception_future(_error);
+                             return make_exception_future<ret_t>(_error);
                          }
-                         return make_ready_future<>();
+                         if(BIO_ctrl_pending(_out_bio) == 0) {
+                            return make_ready_future<ret_t>(std::move(msg));
+                         }
+                         return make_ready_future<ret_t>();
                      })
-              .then([this, msg] {
-                  if (msg->size() > 0) {
-                      _output_pending = _out.put(std::move(*msg).release());
+              .then([this](scattered_message<char> msg) mutable {
+                  if (msg.size() > 0) {
+                      _output_pending = _out.put(std::move(msg).release());
                   } else {
                       _output_pending = make_ready_future();
                   }
-                  return make_ready_future<>();
               });
         });
     }
@@ -701,7 +721,7 @@ public:
             return perform_push().then([this] {
                 return wait_for_output();
             }).then([]() {
-                return make_ready_future<bool>(true);
+                return true;
             });
         } else {
             return make_ready_future<bool>(false);
@@ -732,7 +752,7 @@ public:
                 return with_semaphore(_in_sem, 1, [this] {
                     return perform_pull();
                 }).then([] {
-                    return make_ready_future<stop_iteration>(stop_iteration::no);
+                    return stop_iteration::no;
                 });
             });
         case SSL_ERROR_SSL: {
@@ -755,7 +775,7 @@ public:
                         "Encountered unexpected error while handling SSL error during SSL write"));
                 }
             }).then([] {
-                return make_ready_future<stop_iteration>(stop_iteration::no);
+                return stop_iteration::no;
             });
         }
         default:
@@ -804,7 +824,7 @@ public:
     // Used to push unencrypted data through OpenSSL, which will
     // encrypt it and then place it into the output bio.
     future<> put(net::packet p) override {
-        static const size_t openssl_max_record_size = 16 * 1024;
+        constexpr size_t openssl_max_record_size = 16 * 1024;
         if (_error) {
             return make_exception_future(_error);
         }
@@ -1087,17 +1107,18 @@ public:
         // must be explicitly queried via SSL_get_peer_certificate
         auto res = SSL_get_verify_result(_ssl.get());
         if (res != X509_V_OK) {
-            sstring stat_str(X509_verify_cert_error_string(res));
+            auto stat_str(X509_verify_cert_error_string(res));
             auto dn = extract_dn_information();
             if (dn) {
-                std::stringstream ss;
-                ss << stat_str;
-                if (stat_str.back() != ' ') {
-                    ss << ' ';
+                std::string_view stat_str_view{stat_str};
+                if (stat_str_view.ends_with(" ")) {
+                    stat_str_view.remove_suffix(1);
                 }
-                ss << "(Issuer=[" << dn->issuer << "], Subject=[" << dn->subject
-                   << "])";
-                stat_str = ss.str();
+                throw verification_error(fmt::format(
+                    R"|({} (Issuer=["{}"], Subject=["{}"]))|",
+                    stat_str_view,
+                    dn->issuer,
+                    dn->subject));
             }
             throw verification_error(stat_str);
         } else if (SSL_get0_peer_certificate(_ssl.get()) == nullptr) {
@@ -1139,21 +1160,14 @@ public:
             if (_error || !connected()) {
                 return make_ready_future();
             }
-            return repeat([this] {
-                if (eof()) {
-                    return make_ready_future<stop_iteration>(
-                      stop_iteration::yes);
-                }
-                return do_get().then([](auto) {
-                    return make_ready_future<stop_iteration>(
-                      stop_iteration::no);
-                });
-            });
+            return do_until(
+                [this] { return eof(); },
+                [this] { return do_get().discard_result(); });
         });
     }
 
-    // This function is called to kcik off the handshake.  It will obtain
-    // locks on the _in_sem and _out_sem semaphores and start off the handshake.
+    // This function is called to kick off the handshake.  It will obtain
+    // locks on the _in_sem and _out_sem semaphores and start the handshake.
     future<> handshake() {
         if (_creds->need_load_system_trust()) {
             if (!SSL_CTX_set_default_verify_paths(_ctx.get())) {
@@ -1197,31 +1211,23 @@ public:
     void close() noexcept override {
         // only do once.
         if (!std::exchange(_shutdown, true)) {
-            auto me = shared_from_this();
             // running in background. try to bye-handshake us nicely, but after 10s we forcefully close.
             (void)with_timeout(
               timer<>::clock::now() + std::chrono::seconds(10), shutdown())
               .finally([this] {
                   _eof = true;
-                  try {
-                      (void)_in.close().handle_exception(
-                        [](std::exception_ptr) {});
-                  } catch (...) {
-                  }
-                  try {
-                      (void)_out.close().handle_exception(
-                        [](std::exception_ptr) {});
-                  } catch (...) {
-                  }
+                  return _in.close();
+              }).finally([this] {
+                  return _out.close();
+              }).finally([this] {
                   // make sure to wait for handshake attempt to leave semaphores. Must be in same order as
                   // handshake aqcuire, because in worst case, we get here while a reader is attempting
                   // re-handshake.
                   return with_semaphore(_in_sem, 1, [this] {
                       return with_semaphore(_out_sem, 1, [] { });
                   });
-              })
-              .then_wrapped(
-                [me = std::move(me)](future<> f) { f.ignore_ready_future(); });
+              }).handle_exception([me = shared_from_this()](std::exception_ptr) {
+              }).discard_result();
         }
     }
     // helper for sink
