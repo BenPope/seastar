@@ -124,9 +124,7 @@ public:
 
 private:
     explicit ossl_error(std::string msg)
-      : std::system_error(0, tls::error_category(), std::move(msg)) {
-        assert(false);
-      }
+      : std::system_error(0, tls::error_category(), std::move(msg)) {}
     ossl_error(std::string msg, std::vector<ossl_errc> error_codes)
       : std::system_error(make_error_code(error_codes.front()), std::move(msg))
       , _ossl_error_codes(std::move(error_codes)) {}
@@ -626,20 +624,16 @@ public:
           }
           return ssl;
       }())
-      , _in_bio(BIO_new(BIO_s_mem()))
-      , _out_bio(BIO_new(BIO_s_mem()))
       , _type(t) {
-        if (!_in_bio || !_out_bio) {
-            if (_in_bio) {
-                BIO_free(_in_bio);
-                _in_bio = nullptr;
-            }
-            if (_out_bio) {
-                BIO_free(_out_bio);
-                _out_bio = nullptr;
-            }
+        bio_ptr in_bio(BIO_new(BIO_s_mem()));
+        bio_ptr out_bio(BIO_new(BIO_s_mem()));
+        if (!in_bio || !out_bio) {
             throw std::runtime_error("Failed to create BIOs");
         }
+        // SSL_set_bio transfers ownership of the read and write bios to the SSL
+        // instance
+        SSL_set_bio(_ssl.get(), in_bio.release(), out_bio.release());
+
         if (_type == session_type::SERVER) {
             SSL_set_accept_state(_ssl.get());
         } else {
@@ -649,9 +643,6 @@ public:
             }
             SSL_set_connect_state(_ssl.get());
         }
-        // SSL_set_bio transfers ownership of the read and write bios to the SSL
-        // instance
-        SSL_set_bio(_ssl.get(), _in_bio, _out_bio);
     }
 
     session(session_type t, shared_ptr<certificate_credentials> creds,
@@ -683,19 +674,19 @@ public:
             return repeat_until_value(
                      [this, msg = scattered_message<char>()] () mutable {
                          using ret_t = std::optional<scattered_message<char>>;
-                         buf_type buf(BIO_ctrl_pending(_out_bio));
+                         buf_type buf(BIO_ctrl_pending(out_bio()));
                          auto n = BIO_read(
-                           _out_bio, buf.get_write(), buf.size());
+                           out_bio(), buf.get_write(), buf.size());
                          if (n > 0) {
                              buf.trim(n);
                              msg.append(std::move(buf));
-                         } else if (!BIO_should_retry(_out_bio)) {
+                         } else if (!BIO_should_retry(out_bio())) {
                              _error = std::make_exception_ptr(
                                ossl_error::make_ossl_error(
                                  "Failed to read data from _out_bio"));
                              return make_exception_future<ret_t>(_error);
                          }
-                         if(BIO_ctrl_pending(_out_bio) == 0) {
+                         if(BIO_ctrl_pending(out_bio()) == 0) {
                             return make_ready_future<ret_t>(std::move(msg));
                          }
                          return make_ready_future<ret_t>();
@@ -717,7 +708,7 @@ public:
     // immediately.
     // Returns true if data is sent, false if not
     future<bool> maybe_perform_push_with_wait() {
-        if (BIO_ctrl_pending(_out_bio) > 0) {
+        if (BIO_ctrl_pending(out_bio()) > 0) {
             return perform_push().then([this] {
                 return wait_for_output();
             }).then([]() {
@@ -969,7 +960,7 @@ public:
         // Data is available to be pulled of the SSL session if there is pending
         // data on the SSL session or there is data in the _in_bio which SSL reads
         // from
-        auto data_to_pull = (BIO_ctrl_pending(_in_bio) + SSL_pending(_ssl.get())) > 0;
+        auto data_to_pull = (BIO_ctrl_pending(in_bio()) + SSL_pending(_ssl.get())) > 0;
         auto f = make_ready_future<>();
         if (!data_to_pull) {
             // If nothing is in the SSL buffers then we may have to wait for
@@ -980,7 +971,7 @@ public:
             if (eof()) {
                 return make_ready_future<buf_type>();
             }
-            auto avail = BIO_ctrl_pending(_in_bio) + SSL_pending(_ssl.get());
+            auto avail = BIO_ctrl_pending(in_bio()) + SSL_pending(_ssl.get());
             buf_type buf(avail);
             size_t bytes_read = 0;
             auto read_result = SSL_read_ex(
@@ -1478,7 +1469,7 @@ private:
               [this] { return _input.empty(); },
               [this] {
                   const auto n = BIO_write(
-                    _in_bio, _input.get(), _input.size());
+                    in_bio(), _input.get(), _input.size());
                   if (n <= 0) {
                       _error = std::make_exception_ptr(
                         ossl_error::make_ossl_error(
@@ -1494,6 +1485,9 @@ private:
     size_t in_avail() const { return _input.size(); }
 
 private:
+    BIO* in_bio() { return SSL_get_rbio(_ssl.get()); }
+    BIO* out_bio() { return SSL_get_wbio(_ssl.get()); }
+
     std::unique_ptr<net::connected_socket_impl> _sock;
     shared_ptr<tls::certificate_credentials::impl> _creds;
     data_source _in;
@@ -1508,8 +1502,6 @@ private:
     buf_type _input;
     ssl_ctx_ptr _ctx;
     ssl_ptr _ssl;
-    BIO* _in_bio = nullptr;
-    BIO* _out_bio = nullptr;
     session_type _type;
     bool _eof = false;
     bool _shutdown = false;
