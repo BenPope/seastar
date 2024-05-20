@@ -610,8 +610,7 @@ public:
 
     session(session_type t, shared_ptr<tls::certificate_credentials> creds,
             std::unique_ptr<net::connected_socket_impl> sock, tls_options options = {})
-      : _type(t)
-      , _sock(std::move(sock))
+      : _sock(std::move(sock))
       , _creds(creds->_impl)
       , _in(_sock->source())
       , _out(_sock->sink())
@@ -619,7 +618,7 @@ public:
       , _out_sem(1)
       , _options(std::move(options))
       , _output_pending(make_ready_future<>())
-      , _ctx(make_ssl_context())
+      , _ctx(make_ssl_context(t))
       , _ssl([this]() {
           auto ssl = SSL_new(_ctx.get());
           if (!ssl) {
@@ -628,7 +627,8 @@ public:
           return ssl;
       }())
       , _in_bio(BIO_new(BIO_s_mem()))
-      , _out_bio(BIO_new(BIO_s_mem())) {
+      , _out_bio(BIO_new(BIO_s_mem()))
+      , _type(t) {
         if (!_in_bio || !_out_bio) {
             if (_in_bio) {
                 BIO_free(_in_bio);
@@ -1392,14 +1392,14 @@ private:
           .subject = std::move(*subject), .issuer = std::move(*issuer)};
     }
 
-    ssl_ctx_ptr make_ssl_context() {
+    ssl_ctx_ptr make_ssl_context(session_type type) {
         auto ssl_ctx = ssl_ctx_ptr(SSL_CTX_new(TLS_method()));
         if (!ssl_ctx) {
             throw ossl_error::make_ossl_error(
               "Failed to initialize SSL context");
         }
         const auto& ck_pair = _creds->get_certkey_pair();
-        if (_type == session_type::SERVER) {
+        if (type == session_type::SERVER) {
             if (!ck_pair) {
                 throw ossl_error::make_ossl_error(
                   "Cannot start session without cert/key pair for server");
@@ -1494,24 +1494,25 @@ private:
     size_t in_avail() const { return _input.size(); }
 
 private:
-    session_type _type;
     std::unique_ptr<net::connected_socket_impl> _sock;
     shared_ptr<tls::certificate_credentials::impl> _creds;
     data_source _in;
     data_sink _out;
     std::exception_ptr _error;
 
-    bool _eof = false;
-    semaphore _in_sem, _out_sem;
+    semaphore _in_sem;
+    semaphore _out_sem;
     tls_options _options;
 
-    bool _shutdown = false;
     future<> _output_pending;
     buf_type _input;
     ssl_ctx_ptr _ctx;
     ssl_ptr _ssl;
     BIO* _in_bio = nullptr;
     BIO* _out_bio = nullptr;
+    session_type _type;
+    bool _eof = false;
+    bool _shutdown = false;
 };
 } // namespace tls
 
