@@ -802,8 +802,16 @@ public:
             return make_ready_future<stop_iteration>(stop_iteration::no);
         case SSL_ERROR_SYSCALL:
         {
-            auto err = std::system_error(errno, std::system_category(), "System error encountered during SSL write");
-            return handle_output_error(std::move(err)).then([] {
+            auto f = make_ready_future<>();
+            if (errno == 0) {
+                auto err = ossl_error::make_ossl_error("System error encountered during SSL write");
+                f = handle_output_error(std::move(err));
+            } else {
+                auto err = std::system_error(
+                    errno, std::system_category(), "System error encountered during SSL write");
+                f = handle_output_error(std::move(err));
+            }
+            return f.then([] {
                 return stop_iteration::yes;
             });
         }
@@ -960,9 +968,14 @@ public:
                             });
                         case SSL_ERROR_SYSCALL:
                         {
-                            auto err = std::system_error(
-                                errno, std::system_category(), "System error during handshake");
-                            return handle_output_error(std::move(err));
+                            if (errno == 0) {
+                                auto err = ossl_error::make_ossl_error("System error during handshake");
+                                return handle_output_error(std::move(err));
+                            } else {
+                                auto err = std::system_error(
+                                    errno, std::system_category(), "System error during handshake");
+                                return handle_output_error(std::move(err));
+                            }
                         }
                         case SSL_ERROR_SSL:
                         {
@@ -1068,10 +1081,12 @@ public:
                 case SSL_ERROR_SYSCALL:
                     // check to see if errno is 0, which may indicate some sort of shutdown
                     if (errno == 0) {
-                        return make_ready_future<buf_type>();
+                        _error = std::make_exception_ptr(ossl_error::make_ossl_error(
+                            "System error during SSL read"));
+                    } else {
+                        _error = std::make_exception_ptr(std::system_error(
+                            errno, std::system_category(), "System error during SSL read"));
                     }
-                    _error = std::make_exception_ptr(std::system_error(
-                    errno, std::system_category(), "System error during SSL read"));
                     return make_exception_future<buf_type>(_error);
                 case SSL_ERROR_SSL:
                     {
@@ -1153,9 +1168,14 @@ public:
                 });
             case SSL_ERROR_SYSCALL:
             {
-                auto err = std::system_error(
-                    errno, std::system_category(), "System error during shutdown");
-                return handle_output_error(std::move(err));
+                if (errno == 0) {
+                    auto err = ossl_error::make_ossl_error("System error during shutdown");
+                    return handle_output_error(std::move(err));
+                } else {
+                    auto err = std::system_error(
+                        errno, std::system_category(), "System error during shutdown");
+                    return handle_output_error(std::move(err));
+                }
             }
             case SSL_ERROR_SSL:
             {
