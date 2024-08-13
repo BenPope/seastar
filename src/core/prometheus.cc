@@ -222,11 +222,9 @@ static std::ostream& operator<<(std::ostream& os, const seastar::metrics::impl::
     switch (v.type()) {
     case seastar::metrics::impl::data_type::GAUGE:
     case seastar::metrics::impl::data_type::REAL_COUNTER:
-        fmt::print(os, "{:.6f}", v.d());
-        break;
+        return os << v.d();
     case seastar::metrics::impl::data_type::COUNTER:
-        fmt::print(os, "{}", v.i());
-        break;
+        return os << v.i();
     case seastar::metrics::impl::data_type::HISTOGRAM:
     case seastar::metrics::impl::data_type::SUMMARY:
         break;
