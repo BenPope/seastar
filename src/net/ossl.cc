@@ -348,6 +348,10 @@ void tls::credentials_builder::enable_server_precedence() {
     _enable_server_precedence = true;
 }
 
+void tls::credentials_builder::enable_tls_renegotiation() {
+    _enable_tls_renegotiation = true;
+}
+
 void tls::credentials_builder::set_minimum_tls_version(tls_version version) {
     _min_tls_version.emplace(version);
 }
@@ -811,6 +815,16 @@ void tls::certificate_credentials::set_dn_verification_callback(dn_callback cb) 
 
 void tls::certificate_credentials::set_enable_certificate_verification(bool enable) {
     _impl->set_enable_certificate_verification(enable);
+}
+
+std::optional<std::vector<cert_info>> tls::certificate_credentials::get_cert_info() const noexcept {
+    tls_log.error("get_cert_info is not implemented for OpenSSL");
+    return std::nullopt;
+}
+
+std::optional<std::vector<cert_info>> tls::certificate_credentials::get_trust_list_info() const noexcept {
+    tls_log.error("get_trust_list_info is not implemented for OpenSSL");
+    return std::nullopt;
 }
 
 void tls::certificate_credentials::enable_load_system_trust() {
