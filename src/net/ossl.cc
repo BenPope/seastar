@@ -861,7 +861,7 @@ int session_ticket_cb(SSL * s, unsigned char key_name[16],
  * of these, since we handle handshake etc.
  *
  * The implmentation below relies on OpenSSL, for the gnutls implementation
- * see tls.cc and the CMake option 'Seastar_WITH_OSSL'
+ * see tls.cc and the CMake option 'Seastar_USE_OPENSSL'
  */
 class session : public enable_shared_from_this<session>, public session_impl {
 public:
@@ -1576,6 +1576,28 @@ public:
             });
         }
         return futurize_invoke(f, std::forward<Args>(args)...);
+    }
+
+    future<sstring> get_cipher_suite() override {
+        return state_checked_access([this] {
+            const SSL_CIPHER* cipher = SSL_get_current_cipher(_ssl.get());
+            const char* iana_name = SSL_CIPHER_standard_name(cipher);
+            return sstring{iana_name ? iana_name : SSL_CIPHER_get_name(cipher)};
+        });
+    }
+
+    future<sstring> get_protocol_version() override {
+        return state_checked_access([this] {
+            int ver = SSL_version(_ssl.get());
+            switch (ver) {
+                case TLS1_3_VERSION: return sstring{"TLS1.3"};
+                case TLS1_2_VERSION: return sstring{"TLS1.2"};
+                case TLS1_1_VERSION: return sstring{"TLS1.1"};
+                case TLS1_VERSION:   return sstring{"TLS1.0"};
+                case SSL3_VERSION:   return sstring{"SSL3.0"};
+                default: return sstring{SSL_get_version(_ssl.get())};
+            }
+        });
     }
 
     future<bool> is_resumed() override {
