@@ -473,9 +473,9 @@ public:
                 return;
             }
             try {
-                // force rebuilding session resume mode key ifAdd commentMore actions
+                // force rebuilding session resume mode key if
                 // enabled. should not reuse sessions across certificate
-                // change (should not work anyway)Add commentMore actions
+                // change (should not work anyway)
                 set_session_resume_mode(_session_resume_mode);
                 if (_creds) {
                     _creds->rebuild(*this);
