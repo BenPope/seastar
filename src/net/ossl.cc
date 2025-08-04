@@ -1560,6 +1560,13 @@ public:
           do_get_alt_name_information(peer_cert, types));
     }
 
+    future<sstring> get_cipher_suite() override {
+        throw std::runtime_error{"get_cipher_suite not implemented for OpenSSL"};
+    }
+    future<sstring> get_protocol_version() override {
+        throw std::runtime_error{"get_protocol_version not implemented for OpenSSL"};
+    }
+
     template<typename Func, typename... Args>
     auto state_checked_access(Func&& f, Args&& ...args) {
         using future_type = typename futurize<std::invoke_result_t<Func, Args...>>::type;
