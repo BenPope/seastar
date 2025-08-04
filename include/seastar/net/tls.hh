@@ -25,6 +25,7 @@
 #include <unordered_set>
 #include <map>
 #include <any>
+#include <span>
 #include <fmt/format.h>
 #endif
 
