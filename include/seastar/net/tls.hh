@@ -407,7 +407,7 @@ namespace tls {
         void enable_server_precedence();
         void set_minimum_tls_version(tls_version);
         void set_maximum_tls_version(tls_version);
-        void enable_tls_renegotation();
+        void enable_tls_renegotiation();
 #endif
 
         void apply_to(certificate_credentials&) const;

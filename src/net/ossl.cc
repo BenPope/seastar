@@ -348,6 +348,10 @@ void tls::credentials_builder::enable_server_precedence() {
     _enable_server_precedence = true;
 }
 
+void tls::credentials_builder::enable_tls_renegotiation() {
+    _enable_tls_renegotiation = true;
+}
+
 void tls::credentials_builder::set_minimum_tls_version(tls_version version) {
     _min_tls_version.emplace(version);
 }
