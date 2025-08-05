@@ -21,10 +21,10 @@
 
 #pragma once
 
-#include <limits>
 #ifndef SEASTAR_MODULE
 #include <boost/container/static_vector.hpp>
 #include <chrono>
+#include <limits>
 #include <memory>
 #include <vector>
 #include <sys/uio.h>
