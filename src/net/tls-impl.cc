@@ -677,7 +677,7 @@ future<shared_ptr<tls::server_credentials>> tls::credentials_builder::build_relo
 
 std::optional<tls::blob> tls::credentials_builder::get_trust_file_blob() const {
     if (auto i = _blobs.find(x509_trust_key); i != _blobs.end()) {
-        return std::make_optional<tls::blob>(boost::any_cast<const x509_simple&>(i->second).data);
+        return std::make_optional<tls::blob>(std::any_cast<const x509_simple&>(i->second).data);
     }
     return std::nullopt;
 }
