@@ -364,6 +364,10 @@ void tls::credentials_builder::set_ciphersuites(const sstring& ciphersuites) {
     _ciphersuites = ciphersuites;
 }
 
+void tls::credentials_builder::set_curves(const sstring& curves) {
+    _curves = curves;
+}
+
 void tls::credentials_builder::enable_server_precedence() {
     _enable_server_precedence = true;
 }
@@ -702,6 +706,10 @@ public:
         _ciphersuites = ciphersuites;
     }
 
+    void set_curves(const sstring& curves) {
+        _curves = curves;
+    }
+
     void enable_server_precedence() {
         _enable_server_precedence = true;
     }
@@ -724,6 +732,10 @@ public:
 
     const sstring& get_ciphersuites() const noexcept {
         return _ciphersuites;
+    }
+
+    const sstring& get_curves() const noexcept {
+        return _curves;
     }
 
     bool is_server_precedence_enabled() {
@@ -785,6 +797,7 @@ private:
     std::optional<tls_version> _max_tls_version;
     sstring _cipher_string;
     sstring _ciphersuites;
+    sstring _curves;
 
     client_auth _client_auth = client_auth::NONE;
     session_resume_mode _session_resume_mode = session_resume_mode::NONE;
@@ -839,6 +852,10 @@ void tls::certificate_credentials::set_cipher_string(const sstring& cipher_strin
 
 void tls::certificate_credentials::set_ciphersuites(const sstring& ciphersuites) {
     _impl->set_ciphersuites(ciphersuites);
+}
+
+void tls::certificate_credentials::set_curves(const sstring& curves) {
+    _impl->set_curves(curves);
 }
 
 void tls::certificate_credentials::enable_server_precedence() {
@@ -2075,6 +2092,15 @@ private:
                         "Failed to set ciphersuites '{}'", _creds->get_ciphersuites()));
             }
         }
+
+        if (!_creds->get_curves().empty()) {
+            if (SSL_CTX_set1_curves_list(ssl_ctx.get(), _creds->get_curves().c_str()) != 1) {
+                throw make_ossl_error(
+                    fmt::format(
+                        "Failed to set curves '{}'", _creds->get_curves()));
+            }
+        }
+
         const auto& alpn_protocols = type == session_type::CLIENT ? _options.alpn_protocols : _creds->_alpn_protocols;
         // ALPN setup
         if(!alpn_protocols.empty()) {

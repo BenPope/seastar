@@ -241,6 +241,14 @@ namespace tls {
         void set_ciphersuites(const sstring&);
 
         /**
+         * Used to set the curves to use for TLS
+         *
+         * See https://www.openssl.org/docs/manmaster/man3/SSL_CTX_set1_curves_list.html
+         * for documentation on the format of the curves string.
+         */
+        void set_curves(const sstring&);
+
+        /**
          * Call this when you want to enable server precedence when
          * negotitating the TLS handshake.  Client precedence is on
          * by default.
@@ -423,6 +431,7 @@ namespace tls {
 #ifdef SEASTAR_USE_OPENSSL
         void set_cipher_string(const sstring&);
         void set_ciphersuites(const sstring&);
+        void set_curves(const sstring&);
         void enable_server_precedence();
         void set_minimum_tls_version(tls_version);
         void set_maximum_tls_version(tls_version);
@@ -455,11 +464,16 @@ namespace tls {
         std::multimap<sstring, std::any> _blobs;
         client_auth _client_auth = client_auth::NONE;
         session_resume_mode _session_resume_mode = session_resume_mode::NONE;
+#ifdef SEASTAR_USE_GNUTLS
         sstring _priority;
+#endif
         std::vector<uint8_t> _session_resume_key;
         std::vector<sstring> _alpn_protocols;
+#ifdef SEASTAR_USE_OPENSSL
         sstring _cipher_string;
         sstring _ciphersuites;
+        sstring _curves;
+#endif
         bool _enable_server_precedence = false;
         bool _enable_tls_renegotiation = false;
         std::optional<tls_version> _min_tls_version;
