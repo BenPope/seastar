@@ -196,6 +196,106 @@ sstring asn1_str_to_str(T* asn1) {
     return sstring(reinterpret_cast<const char*>(ASN1_STRING_get0_data(asn1)), len);
 };
 
+namespace {
+
+struct seastar_bio_ctx {
+    std::vector<seastar::temporary_buffer<char>> buffers;
+    size_t buf_index = 0;   // which temporary_buffer we’re on
+    size_t buf_offset = 0;  // position inside current buffer
+};
+
+static int bio_seastar_read(BIO* b, char* out, int outl) {
+    if (!out || outl <= 0)
+        return 0;
+
+    auto* ctx = static_cast<seastar_bio_ctx*>(BIO_get_data(b));
+    if (!ctx) return 0;
+
+    int copied = 0;
+
+    while (outl > 0 && ctx->buf_index < ctx->buffers.size()) {
+        auto& cur = ctx->buffers[ctx->buf_index];
+        size_t remaining = cur.size() - ctx->buf_offset;
+        if (remaining == 0) {
+            ctx->buf_index++;
+            ctx->buf_offset = 0;
+            continue;
+        }
+
+        size_t to_copy = std::min<size_t>(remaining, outl);
+        std::memcpy(out + copied, cur.get() + ctx->buf_offset, to_copy);
+
+        ctx->buf_offset += to_copy;
+        copied += static_cast<int>(to_copy);
+        outl -= static_cast<int>(to_copy);
+    }
+
+    if (copied == 0)
+        return 0; // EOF
+
+    return copied;
+}
+
+static int bio_seastar_write(BIO*, const char*, int) {
+    return -1; // read-only BIO
+}
+
+static long bio_seastar_ctrl(BIO* b, int cmd, long, void*) {
+    auto* ctx = static_cast<seastar_bio_ctx*>(BIO_get_data(b));
+    if (!ctx) return 0;
+
+    switch (cmd) {
+    case BIO_CTRL_EOF:
+        return ctx->buf_index >= ctx->buffers.size();
+    case BIO_CTRL_RESET:
+        ctx->buf_index = 0;
+        ctx->buf_offset = 0;
+        return 1;
+    case BIO_CTRL_FLUSH:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+static int bio_seastar_free(BIO* b) {
+    if (!b) return 0;
+    auto* ctx = static_cast<seastar_bio_ctx*>(BIO_get_data(b));
+    delete ctx;  // free buffers + state
+    BIO_set_data(b, nullptr);
+    return 1;
+}
+
+static BIO_METHOD* bio_seastar_method = nullptr;
+
+static void init_bio_seastar_method() {
+    if (bio_seastar_method) return;
+
+    bio_seastar_method = BIO_meth_new(BIO_TYPE_SOURCE_SINK, "seastar_file_bio");
+    BIO_meth_set_read(bio_seastar_method, bio_seastar_read);
+    BIO_meth_set_write(bio_seastar_method, bio_seastar_write);
+    BIO_meth_set_ctrl(bio_seastar_method, bio_seastar_ctrl);
+    BIO_meth_set_create(bio_seastar_method, [](BIO* b) {
+        BIO_set_init(b, 1);
+        BIO_set_data(b, nullptr);
+        return 1;
+    });
+    BIO_meth_set_destroy(bio_seastar_method, bio_seastar_free);
+}
+
+BIO* BIO_new_seastar(std::vector<seastar::temporary_buffer<char>> bufs) {
+    init_bio_seastar_method();
+
+    BIO* b = BIO_new(bio_seastar_method);
+    if (!b) return nullptr;
+
+    auto* ctx = new seastar_bio_ctx{std::move(bufs)};
+    BIO_set_data(b, ctx);
+    return b;
+}
+
+}
+
 static std::vector<std::byte> extract_x509_serial(X509* cert) {
     constexpr size_t serial_max = 160;
     const ASN1_INTEGER *serial_no = X509_get_serialNumber(cert);
@@ -470,8 +570,7 @@ public:
         }
     }
 
-    static x509_ptr parse_x509_cert(const blob& b, x509_crt_format fmt) {
-        bio_ptr cert_bio(BIO_new_mem_buf(b.data(), b.size()));
+    static x509_ptr parse_x509_cert(bio_ptr cert_bio, x509_crt_format fmt) {
         x509_ptr cert;
         switch(fmt) {
         case tls::x509_crt_format::PEM:
@@ -487,8 +586,8 @@ public:
         return cert;
     }
 
-    void set_x509_trust(const blob& b, x509_crt_format fmt) {
-        bio_ptr cert_bio(BIO_new_mem_buf(b.data(), b.size()));
+    
+    void set_x509_trust(bio_ptr cert_bio, x509_crt_format fmt) {
         x509_ptr cert;
         switch(fmt) {
         case tls::x509_crt_format::PEM:
@@ -509,8 +608,7 @@ public:
         }
     }
 
-    void set_x509_crl(const blob& b, x509_crt_format fmt) {
-        bio_ptr cert_bio(BIO_new_mem_buf(b.data(), b.size()));
+    void set_x509_crl(bio_ptr cert_bio, x509_crt_format fmt) {
         x509_crl_ptr crl;
         switch(fmt) {
         case x509_crt_format::PEM:
@@ -533,9 +631,8 @@ public:
         enable_crl_checking();
     }
 
-    void set_x509_key(const blob& cert, const blob& key, x509_crt_format fmt) {
+    void set_x509_key(bio_ptr cert_bio, bio_ptr key_bio, x509_crt_format fmt) {
         x509_ptr x509_cert{nullptr};
-        bio_ptr key_bio(BIO_new_mem_buf(key.data(), key.size()));
         evp_pkey_ptr pkey;
         switch(fmt) {
         case x509_crt_format::PEM:
@@ -544,7 +641,7 @@ public:
             // for this situation.  So we will parse through the blob using `iterate_pem_certs`.
             // The first cert encountered will be assigned to x509_cert and all subsequent certs
             // will be added to the X509_STORE's trusted certificates
-            iterate_pem_certs(bio_ptr{BIO_new_mem_buf(cert.data(), cert.size())}, [this, &x509_cert](X509_INFO* info) {
+            iterate_pem_certs(cert_bio, [this, &x509_cert](X509_INFO* info) {
                 if (!info->x509) {
                     throw make_ossl_error("Failed to parse X.509 certificate in loading key/cert chain");
                 }
@@ -562,7 +659,7 @@ public:
         case x509_crt_format::DER:
             pkey = evp_pkey_ptr(d2i_PrivateKey_bio(key_bio.get(), nullptr));
             // We don't handle a chain of certs when encoded in DER
-            x509_cert = parse_x509_cert(cert, fmt);
+            x509_cert = parse_x509_cert(std::move(cert_bio), fmt);
             break;
         default:
             __builtin_unreachable();
@@ -576,9 +673,8 @@ public:
         _cert_and_key = certkey_pair{.cert = std::move(x509_cert), .key = std::move(pkey)};
     }
 
-    void set_simple_pkcs12(const blob& b, x509_crt_format, const sstring& password) {
+    void set_simple_pkcs12(bio_ptr bio, x509_crt_format, const sstring& password) {
         // Load the PKCS12 file
-        bio_ptr bio(BIO_new_mem_buf(b.data(), b.size()));
         if (auto p12 = pkcs12(d2i_PKCS12_bio(bio.get(), nullptr))) {
             // Extract the certificate and private key from PKCS12, using provided password
             EVP_PKEY *pkey = nullptr;
@@ -810,22 +906,48 @@ tls::certificate_credentials& tls::certificate_credentials::operator=(
 
 void tls::certificate_credentials::set_x509_trust(const blob& b,
         x509_crt_format fmt) {
-    _impl->set_x509_trust(b, fmt);
+    _impl->set_x509_trust(bio_ptr(BIO_new_mem_buf(b.data(), b.size())), fmt);
+}
+
+void tls::certificate_credentials::set_x509_trust(blob_vec b,
+        x509_crt_format fmt) {
+    _impl->set_x509_trust(bio_ptr(BIO_new_seastar(std::move(b))), fmt);
 }
 
 void tls::certificate_credentials::set_x509_crl(const blob& b,
         x509_crt_format fmt) {
-    _impl->set_x509_crl(b, fmt);
-
+    _impl->set_x509_crl(bio_ptr(BIO_new_mem_buf(b.data(), b.size())), fmt);
 }
+
+void tls::certificate_credentials::set_x509_crl(blob_vec b,
+        x509_crt_format fmt) {
+    _impl->set_x509_crl(bio_ptr(BIO_new_seastar(make_lw_shared<blob_vec>(std::move(b)))), fmt);
+}
+
 void tls::certificate_credentials::set_x509_key(const blob& cert,
         const blob& key, x509_crt_format fmt) {
-    _impl->set_x509_key(cert, key, fmt);
+    _impl->set_x509_key(
+        bio_ptr(BIO_new_mem_buf(cert.data(), cert.size())),
+        bio_ptr(BIO_new_mem_buf(key.data(), key.size())),
+        fmt);
+}
+
+void tls::certificate_credentials::set_x509_key(blob_vec cert,
+        blob_vec key, x509_crt_format fmt) {
+    _impl->set_x509_key(
+        bio_ptr(BIO_new_seastar(std::move(cert))),
+        bio_ptr(BIO_new_seastar(std::move(key))),
+        fmt);
 }
 
 void tls::certificate_credentials::set_simple_pkcs12(const blob& b,
         x509_crt_format fmt, const sstring& password) {
-    _impl->set_simple_pkcs12(b, fmt, password);
+    _impl->set_simple_pkcs12(bio_ptr(BIO_new_mem_buf(b.data(), b.size())), fmt, password);
+}
+
+void tls::certificate_credentials::set_simple_pkcs12(blob_vec b,
+        x509_crt_format fmt, const sstring& password) {
+    _impl->set_simple_pkcs12(bio_ptr(BIO_new_seastar(std::move(b))), fmt, password);
 }
 
 future<> tls::certificate_credentials::set_system_trust() {

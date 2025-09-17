@@ -80,6 +80,29 @@ public:
     }
 };
 
+class blob_vec_wrapper: public gnutls_datum_t {
+public:
+    blob_vec_wrapper(const tls::blob_vec& in) {
+        if (in.size() > 1) {
+            for(const auto& f : in) {
+                std::copy(f.begin(), f.end() + f.size(), std::back_inserter(_vec));
+            }
+            data = reinterpret_cast<uint8_t*>(_vec.data());
+            size = static_cast<unsigned>(_vec.size());
+        }
+        else if (in.size() == 1) {
+            data = reinterpret_cast<uint8_t*>(const_cast<char*>(in[0].get()));
+            size = static_cast<unsigned>(in[0].size());
+        } else {
+            data = nullptr;
+            size = 0;
+        }
+    }
+
+    std::vector<char> _vec;
+};
+
+
 class gnutlsinit {
 public:
     gnutlsinit() {
@@ -350,8 +373,20 @@ public:
                 gnutls_certificate_set_x509_trust_mem(_creds, &w,
                         gnutls_x509_crt_fmt_t(fmt)));
     }
+    void set_x509_trust(blob_vec b, x509_crt_format fmt) {
+        blob_vec_wrapper w(b);
+        gtls_chk(
+                gnutls_certificate_set_x509_trust_mem(_creds, &w,
+                        gnutls_x509_crt_fmt_t(fmt)));
+    }
     void set_x509_crl(const blob& b, x509_crt_format fmt) {
         blob_wrapper w(b);
+        gtls_chk(
+                gnutls_certificate_set_x509_crl_mem(_creds, &w,
+                        gnutls_x509_crt_fmt_t(fmt)));
+    }
+    void set_x509_crl(const blob_vec& b, x509_crt_format fmt) {
+        blob_vec_wrapper w(b);
         gtls_chk(
                 gnutls_certificate_set_x509_crl_mem(_creds, &w,
                         gnutls_x509_crt_fmt_t(fmt)));
@@ -363,9 +398,23 @@ public:
                 gnutls_certificate_set_x509_key_mem(_creds, &w1, &w2,
                         gnutls_x509_crt_fmt_t(fmt)));
     }
+    void set_x509_key(const blob_vec& cert, const blob_vec& key, x509_crt_format fmt) {
+        blob_vec_wrapper w1(cert);
+        blob_vec_wrapper w2(key);
+        gtls_chk(
+                gnutls_certificate_set_x509_key_mem(_creds, &w1, &w2,
+                        gnutls_x509_crt_fmt_t(fmt)));
+    }
     void set_simple_pkcs12(const blob& b, x509_crt_format fmt,
             const sstring& password) {
         blob_wrapper w(b);
+        gtls_chk(
+                gnutls_certificate_set_x509_simple_pkcs12_mem(_creds, &w,
+                        gnutls_x509_crt_fmt_t(fmt), password.c_str()));
+    }
+    void set_simple_pkcs12(const blob_vec& b, x509_crt_format fmt,
+            const sstring& password) {
+        blob_vec_wrapper w(b);
         gtls_chk(
                 gnutls_certificate_set_x509_simple_pkcs12_mem(_creds, &w,
                         gnutls_x509_crt_fmt_t(fmt), password.c_str()));
@@ -528,11 +577,21 @@ void tls::certificate_credentials::set_x509_trust(const blob& b,
     _impl->set_x509_trust(b, fmt);
 }
 
+void tls::certificate_credentials::set_x509_trust(blob_vec b,
+        x509_crt_format fmt) {
+    _impl->set_x509_trust(std::move(b), fmt);
+}
+
 void tls::certificate_credentials::set_x509_crl(const blob& b,
         x509_crt_format fmt) {
     _impl->set_x509_crl(b, fmt);
-
 }
+
+void tls::certificate_credentials::set_x509_crl(const blob_vec& b,
+        x509_crt_format fmt) {
+    _impl->set_x509_crl(b, fmt);
+}
+
 void tls::certificate_credentials::set_x509_key(const blob& cert,
         const blob& key, x509_crt_format fmt) {
     _impl->set_x509_key(cert, key, fmt);

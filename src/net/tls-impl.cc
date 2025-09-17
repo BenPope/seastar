@@ -47,8 +47,10 @@ module seastar;
 #include <seastar/core/file.hh>
 #include <seastar/core/future.hh>
 #include <seastar/core/fsnotify.hh>
+#include <seastar/core/fstream.hh>
 #include <seastar/core/thread.hh>
 #include <seastar/core/reactor.hh>
+#include <seastar/util/short_streams.hh>
 
 #include "net/tls-impl.hh"
 #endif
@@ -97,22 +99,44 @@ struct file_info {
 };
 
 struct file_result {
-    temporary_buffer<char> buf;
+    tls::blob_vec buf;
     file_info file;
-    operator temporary_buffer<char>&&() && {
+    operator tls::blob_vec&&() && {
         return std::move(buf);
     }
 };
+
+using buffer_type = tls::blob_vec;
+
+
+static buffer_type to_buffer(tls::blob_vec::element_type buf) {
+    return make_lw_shared<tls::blob_vec::element_type>(std::move(buf));
+}
+
+static buffer_type to_buffer(const tls::blob& buf) {
+    std::vector<temporary_buffer<char>> ret;
+    ret.emplace_back(buf.data(), buf.size());
+    return to_buffer(std::move(ret));
+}
 
 static future<file_result> read_fully(const sstring& name, const sstring& what) {
     return open_file_dma(name, open_flags::ro).then([name = name](file f) mutable {
         return do_with(std::move(f), [name = std::move(name)](file& f) mutable {
             return f.stat().then([&f, name = std::move(name)](struct stat s) mutable {
-                return f.dma_read_bulk<char>(0, s.st_size).then([s, name = std::move(name)](temporary_buffer<char> buf) mutable {
-                    return file_result{ std::move(buf), file_info{
-                        std::move(name), std::chrono::system_clock::from_time_t(s.st_mtim.tv_sec) +
-                            std::chrono::duration_cast<std::chrono::system_clock::duration>(std::chrono::nanoseconds(s.st_mtim.tv_nsec))
-                    } };
+                return do_with(make_file_input_stream(f), [s, name = std::move(name)](input_stream<char>& str) mutable {
+                    return util::read_entire_stream(str).then([s, name](tls::blob_vec::element_type buf) mutable {
+                        using namespace std::chrono;
+                        return file_result{
+                            to_buffer(std::move(buf)),
+                            file_info{
+                                std::move(name),
+                                system_clock::from_time_t(s.st_mtim.tv_sec) +
+                                duration_cast<system_clock::duration>(nanoseconds(s.st_mtim.tv_nsec))
+                            }
+                        };
+                    }).finally([str = std::move(str)]() mutable {
+                        return str.close();
+                    });
                 });
             }).finally([&f]() {
                 return f.close();
@@ -129,39 +153,39 @@ static future<file_result> read_fully(const sstring& name, const sstring& what) 
 
 future<tls::dh_params> tls::dh_params::from_file(
         const sstring& filename, x509_crt_format fmt) {
-    return read_fully(filename, "dh parameters").then([fmt](temporary_buffer<char> buf) {
-        return make_ready_future<dh_params>(dh_params(blob(buf.get()), fmt));
+    return read_fully(filename, "dh parameters").then([fmt](blob_vec buf) {
+        return make_ready_future<dh_params>(dh_params(std::move(buf), fmt));
     });
 }
 
 future<> tls::abstract_credentials::set_x509_trust_file(
         const sstring& cafile, x509_crt_format fmt) {
-    return read_fully(cafile, "trust file").then([this, fmt](temporary_buffer<char> buf) {
-        set_x509_trust(blob(buf.get(), buf.size()), fmt);
+    return read_fully(cafile, "trust file").then([this, fmt](blob_vec buf) {
+        set_x509_trust(std::move(buf), fmt);
     });
 }
 
 future<> tls::abstract_credentials::set_x509_crl_file(
         const sstring& crlfile, x509_crt_format fmt) {
-    return read_fully(crlfile, "crl file").then([this, fmt](temporary_buffer<char> buf) {
-        set_x509_crl(blob(buf.get(), buf.size()), fmt);
+    return read_fully(crlfile, "crl file").then([this, fmt](blob_vec buf) {
+        set_x509_crl(std::move(buf), fmt);
     });
 }
 
 future<> tls::abstract_credentials::set_x509_key_file(
         const sstring& cf, const sstring& kf, x509_crt_format fmt) {
-    return read_fully(cf, "certificate file").then([this, fmt, kf = kf](temporary_buffer<char> buf) {
-        return read_fully(kf, "key file").then([this, fmt, buf = std::move(buf)](temporary_buffer<char> buf2) {
-                    set_x509_key(blob(buf.get(), buf.size()), blob(buf2.get(), buf2.size()), fmt);
-                });
+    return read_fully(cf, "certificate file").then([this, fmt, kf = kf](blob_vec buf) {
+        return read_fully(kf, "key file").then([this, fmt, buf = std::move(buf)](blob_vec buf2) mutable {
+            set_x509_key(std::move(buf), std::move(buf2), fmt);
+        });
     });
 }
 
 future<> tls::abstract_credentials::set_simple_pkcs12_file(
         const sstring& pkcs12file, x509_crt_format fmt,
         const sstring& password) {
-    return read_fully(pkcs12file, "pkcs12 file").then([this, fmt, password = password](temporary_buffer<char> buf) {
-        set_simple_pkcs12(blob(buf.get(), buf.size()), fmt, password);
+    return read_fully(pkcs12file, "pkcs12 file").then([this, fmt, password = password](blob_vec buf) {
+        set_simple_pkcs12(std::move(buf), fmt, password);
     });
 }
 
@@ -171,8 +195,6 @@ static const sstring x509_crl_key = "x509_crl";
 static const sstring x509_key_key = "x509_key";
 static const sstring pkcs12_key = "pkcs12";
 static const sstring system_trust = "system_trust";
-
-using buffer_type = std::basic_string<tls::blob::value_type, tls::blob::traits_type, std::allocator<tls::blob::value_type>>;
 
 struct x509_simple {
     buffer_type data;
@@ -200,48 +222,44 @@ void tls::credentials_builder::set_dh_level(dh_params::level level) {
 }
 
 void tls::credentials_builder::set_x509_trust(const blob& b, x509_crt_format fmt) {
-    _blobs.emplace(x509_trust_key, x509_simple{ std::string(b), fmt });
+    _blobs.emplace(x509_trust_key, x509_simple{ to_buffer(b), fmt });
 }
 
 void tls::credentials_builder::set_x509_crl(const blob& b, x509_crt_format fmt) {
-    _blobs.emplace(x509_crl_key, x509_simple{ std::string(b), fmt });
+    _blobs.emplace(x509_crl_key, x509_simple{ to_buffer(b), fmt });
 }
 
 void tls::credentials_builder::set_x509_key(const blob& cert, const blob& key, x509_crt_format fmt) {
-    _blobs.emplace(x509_key_key, x509_key { std::string(cert), std::string(key), fmt });
+    _blobs.emplace(x509_key_key, x509_key { to_buffer(cert), to_buffer(key), fmt });
 }
 
 void tls::credentials_builder::set_simple_pkcs12(const blob& b, x509_crt_format fmt, const sstring& password) {
-    _blobs.emplace(pkcs12_key, pkcs12_simple{std::string(b), fmt, password });
-}
-
-static buffer_type to_buffer(const temporary_buffer<char>& buf) {
-    return buffer_type(buf.get(), buf.get() + buf.size());
+    _blobs.emplace(pkcs12_key, pkcs12_simple{ to_buffer(b), fmt, password });
 }
 
 future<> tls::credentials_builder::set_x509_trust_file(const sstring& cafile, x509_crt_format fmt) {
     return read_fully(cafile, "trust file").then([this, fmt](file_result f) {
-        _blobs.emplace(x509_trust_key, x509_simple{ to_buffer(f.buf), fmt, std::move(f.file) });
+        _blobs.emplace(x509_trust_key, x509_simple{ std::move(f.buf), fmt, std::move(f.file) });
     });
 }
 
 future<> tls::credentials_builder::set_x509_crl_file(const sstring& crlfile, x509_crt_format fmt) {
     return read_fully(crlfile, "crl file").then([this, fmt](file_result f) {
-        _blobs.emplace(x509_crl_key, x509_simple{ to_buffer(f.buf), fmt, std::move(f.file) });
+        _blobs.emplace(x509_crl_key, x509_simple{ std::move(f.buf), fmt, std::move(f.file) });
     });
 }
 
 future<> tls::credentials_builder::set_x509_key_file(const sstring& cf, const sstring& kf, x509_crt_format fmt) {
     return read_fully(cf, "certificate file").then([this, fmt, kf = kf](file_result cf) {
-        return read_fully(kf, "key file").then([this, fmt, cf = std::move(cf)](file_result kf) {
-            _blobs.emplace(x509_key_key, x509_key{ to_buffer(cf.buf), to_buffer(kf.buf), fmt, std::move(cf.file), std::move(kf.file) });
+        return read_fully(kf, "key file").then([this, fmt, cf = std::move(cf)](file_result kf) mutable {
+            _blobs.emplace(x509_key_key, x509_key{ std::move(cf.buf), std::move(kf.buf), fmt, std::move(cf.file), std::move(kf.file) });
         });
     });
 }
 
 future<> tls::credentials_builder::set_simple_pkcs12_file(const sstring& pkcs12file, x509_crt_format fmt, const sstring& password) {
     return read_fully(pkcs12file, "pkcs12 file").then([this, fmt, password = password](file_result f) {
-        _blobs.emplace(pkcs12_key, pkcs12_simple{ to_buffer(f.buf), fmt, password, std::move(f.file) });
+        _blobs.emplace(pkcs12_key, pkcs12_simple{ std::move(f.buf), fmt, password, std::move(f.file) });
     });
 }
 
@@ -493,8 +511,7 @@ public:
                     // just ignore for now, and hope the dir watch will tell us when it is back...
                     return;
                 }
-                temporary_buffer<char> buf = read_fully(filename, "reloading").get();
-                dst = to_buffer(buf);
+                dst = read_fully(filename, "reloading").get();
                 ++num_changed;
             };
             visit_blobs(_blobs, make_visitor(
@@ -675,9 +692,9 @@ future<shared_ptr<tls::server_credentials>> tls::credentials_builder::build_relo
     return build_reloadable_server_credentials(wrap_reload_callback(std::move(cb)), tolerance);
 }
 
-std::optional<tls::blob> tls::credentials_builder::get_trust_file_blob() const {
+std::optional<buffer_type> tls::credentials_builder::get_trust_file_blob() const {
     if (auto i = _blobs.find(x509_trust_key); i != _blobs.end()) {
-        return std::make_optional<tls::blob>(std::any_cast<const x509_simple&>(i->second).data);
+        return std::make_optional<buffer_type>(std::any_cast<const x509_simple&>(i->second).data);
     }
     return std::nullopt;
 }

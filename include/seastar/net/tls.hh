@@ -33,6 +33,7 @@
 #include <seastar/core/internal/api-level.hh>
 #include <seastar/core/sstring.hh>
 #include <seastar/core/shared_ptr.hh>
+#include <seastar/core/temporary_buffer.hh>
 #include <seastar/net/socket_defs.hh>
 #include <seastar/net/inet_address.hh>
 #include <seastar/util/std-compat.hh>
@@ -66,6 +67,7 @@ namespace tls {
     };
 
     typedef std::basic_string_view<char> blob;
+    typedef lw_shared_ptr<std::vector<temporary_buffer<char>>> blob_vec;
 
     class session;
     class server_session;
@@ -89,6 +91,7 @@ namespace tls {
         dh_params(level = level::LEGACY);
         // loads a key from data
         dh_params(const blob&, x509_crt_format);
+        dh_params(blob_vec, x509_crt_format);
         ~dh_params();
 
         dh_params(dh_params&&) noexcept;
@@ -135,10 +138,14 @@ namespace tls {
         virtual ~abstract_credentials() {};
     public:
         virtual void set_x509_trust(const blob&, x509_crt_format) = 0;
+        virtual void set_x509_trust(blob_vec, x509_crt_format) = 0;
         virtual void set_x509_crl(const blob&, x509_crt_format) = 0;
+        virtual void set_x509_crl(blob_vec, x509_crt_format) = 0;
         virtual void set_x509_key(const blob& cert, const blob& key, x509_crt_format) = 0;
+        virtual void set_x509_key(blob_vec cert, blob_vec key, x509_crt_format) = 0;
 
         virtual void set_simple_pkcs12(const blob&, x509_crt_format, const sstring& password) = 0;
+        virtual void set_simple_pkcs12(blob_vec, x509_crt_format, const sstring& password) = 0;
 
         virtual future<> set_x509_trust_file(const sstring& cafile, x509_crt_format);
         virtual future<> set_x509_crl_file(const sstring& crlfile, x509_crt_format);
@@ -201,9 +208,13 @@ namespace tls {
         certificate_credentials& operator=(const certificate_credentials&) = delete;
 
         void set_x509_trust(const blob&, x509_crt_format) override;
+        void set_x509_trust(blob_vec, x509_crt_format) override;
         void set_x509_crl(const blob&, x509_crt_format) override;
+        void set_x509_crl(blob_vec, x509_crt_format) override;
         void set_x509_key(const blob& cert, const blob& key, x509_crt_format) override;
+        void set_x509_key(blob_vec cert, blob_vec key, x509_crt_format) override;
         void set_simple_pkcs12(const blob&, x509_crt_format, const sstring& password) override;
+        void set_simple_pkcs12(blob_vec, x509_crt_format, const sstring& password) override;
 
         /**
          * Loads default system cert trust file
@@ -373,7 +384,7 @@ namespace tls {
 
     using reload_callback = std::function<void(const std::unordered_set<sstring>&, std::exception_ptr)>;
     using reload_callback_ex = std::function<future<>(const credentials_builder&, const std::unordered_set<sstring>&, std::exception_ptr)>;
-    using reload_callback_with_creds = std::function<void(const std::unordered_set<sstring> &, const certificate_credentials &, std::exception_ptr, std::optional<blob>)>;
+    using reload_callback_with_creds = std::function<void(const std::unordered_set<sstring> &, const certificate_credentials &, std::exception_ptr, std::optional<blob_vec>)>;
 
     /**
      * Intentionally "primitive", and more importantly, copyable
@@ -390,9 +401,13 @@ namespace tls {
         void set_dh_level(dh_params::level = dh_params::level::LEGACY);
 
         void set_x509_trust(const blob&, x509_crt_format) override ;
+        void set_x509_trust(blob_vec, x509_crt_format) override ;
         void set_x509_crl(const blob&, x509_crt_format) override;
+        void set_x509_crl(blob_vec, x509_crt_format) override;
         void set_x509_key(const blob& cert, const blob& key, x509_crt_format) override;
+        void set_x509_key(blob_vec cert, blob_vec key, x509_crt_format) override;
         void set_simple_pkcs12(const blob&, x509_crt_format, const sstring& password) override;
+        void set_simple_pkcs12(blob_vec, x509_crt_format, const sstring& password) override;
 
         future<> set_x509_trust_file(const sstring& cafile, x509_crt_format) override;
         future<> set_x509_crl_file(const sstring& crlfile, x509_crt_format) override;
@@ -448,7 +463,7 @@ namespace tls {
         future<shared_ptr<certificate_credentials>> build_reloadable_certificate_credentials(reload_callback_with_creds, std::optional<std::chrono::milliseconds> tolerance = {}) const;
         future<shared_ptr<server_credentials>> build_reloadable_server_credentials(reload_callback_with_creds, std::optional<std::chrono::milliseconds> tolerance = {}) const;
 
-        std::optional<blob> get_trust_file_blob() const;
+        std::optional<blob_vec> get_trust_file_blob() const;
     private:
         friend class reloadable_credentials_base;
 
